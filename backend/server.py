@@ -8,6 +8,7 @@ from typing import Optional, List, Any, Dict
 
 import bcrypt
 import jwt
+import stripe
 import requests
 from bson import ObjectId  # noqa: F401
 from dotenv import load_dotenv
@@ -35,6 +36,16 @@ STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https
 STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
 APP_NAME = "petadmin"
 _storage_key: Optional[str] = None
+
+# Stripe
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_AMOUNT_GBP = int(os.environ.get("STRIPE_PRICE_AMOUNT_GBP", "1299"))
+STRIPE_TRIAL_DAYS = int(os.environ.get("STRIPE_TRIAL_DAYS", "14"))
+stripe.api_key = STRIPE_API_KEY
+# Emergent-managed Stripe test key routes through Emergent's proxy.
+if "sk_test_emergent" in STRIPE_API_KEY:
+    stripe.api_base = "https://integrations.emergentagent.com/stripe"
 
 # ---------- DB ----------
 client = AsyncIOMotorClient(MONGO_URL)
@@ -883,6 +894,207 @@ async def _seed_demo_data(user_id: str) -> None:
 async def seed_demo(user=Depends(current_user)):
     await _seed_demo_data(user["id"])
     return {"ok": True}
+
+
+# ---------- Billing (Stripe) ----------
+class CheckoutIn(BaseModel):
+    origin: str  # frontend origin, used to build success/cancel URLs
+
+
+def _subscription_summary(user: Dict[str, Any]) -> Dict[str, Any]:
+    status = user.get("subscription_status", "trial")
+    trial_ends_at = user.get("trial_ends_at")
+    trial_ends_iso = trial_ends_at.isoformat() if isinstance(trial_ends_at, datetime) else trial_ends_at
+    days_left = 0
+    if trial_ends_iso:
+        try:
+            end = datetime.fromisoformat(str(trial_ends_iso).replace("Z", "+00:00"))
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+            delta = (end - now_utc()).days
+            days_left = max(0, delta)
+        except Exception:
+            days_left = 0
+    entitled = status in {"trialing", "active"} or (status == "trial" and days_left > 0)
+    return {
+        "status": status,
+        "entitled": entitled,
+        "trial_ends_at": trial_ends_iso,
+        "trial_days_left": days_left,
+        "cancel_at_period_end": bool(user.get("cancel_at_period_end", False)),
+        "current_period_end": user.get("current_period_end"),
+        "has_stripe_customer": bool(user.get("stripe_customer_id")),
+    }
+
+
+@api.get("/billing/status")
+async def billing_status(user=Depends(current_user)):
+    full = await db.users.find_one({"id": user["id"]})
+    return _subscription_summary(clean(full) or {})
+
+
+@api.post("/billing/checkout")
+async def create_checkout(body: CheckoutIn, user=Depends(current_user)):
+    if not STRIPE_API_KEY:
+        raise HTTPException(500, "Stripe not configured")
+    origin = body.origin.rstrip("/")
+    try:
+        kwargs: Dict[str, Any] = {
+            "mode": "subscription",
+            "line_items": [{
+                "price_data": {
+                    "currency": "gbp",
+                    "product_data": {"name": "PetAdmin Pro"},
+                    "recurring": {"interval": "month"},
+                    "unit_amount": STRIPE_PRICE_AMOUNT_GBP,
+                },
+                "quantity": 1,
+            }],
+            "subscription_data": {
+                "trial_period_days": STRIPE_TRIAL_DAYS,
+                "metadata": {"user_id": user["id"]},
+            },
+            "success_url": f"{origin}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
+            "cancel_url": f"{origin}/billing/cancelled",
+            "metadata": {"user_id": user["id"]},
+            "customer_email": user["email"],
+        }
+        session = await run_in_threadpool(stripe.checkout.Session.create, **kwargs)
+    except stripe.error.StripeError as e:
+        log.error("Stripe checkout error: %s", e)
+        raise HTTPException(502, f"Stripe error: {getattr(e, 'user_message', None) or str(e)}")
+    # Track the pending checkout session
+    await db.checkout_sessions.update_one(
+        {"session_id": session["id"]},
+        {"$set": {
+            "session_id": session["id"],
+            "user_id": user["id"],
+            "status": "created",
+            "created_at": now_utc(),
+        }},
+        upsert=True,
+    )
+    return {"url": session["url"], "session_id": session["id"]}
+
+
+@api.post("/billing/portal")
+async def create_portal(body: CheckoutIn, user=Depends(current_user)):
+    if not STRIPE_API_KEY:
+        raise HTTPException(500, "Stripe not configured")
+    full = await db.users.find_one({"id": user["id"]})
+    customer_id = (full or {}).get("stripe_customer_id")
+    if not customer_id:
+        raise HTTPException(400, "No active subscription — please subscribe first.")
+    origin = body.origin.rstrip("/")
+    try:
+        portal = await run_in_threadpool(
+            stripe.billing_portal.Session.create,
+            customer=customer_id,
+            return_url=f"{origin}/",
+        )
+    except stripe.error.StripeError as e:
+        log.error("Stripe portal error: %s", e)
+        raise HTTPException(502, "Managing your subscription from inside the app isn't available on this preview environment yet. Please contact support to cancel.")
+    return {"url": portal["url"]}
+
+
+async def _activate_user_from_subscription(user_id: str, sub: Dict[str, Any]) -> None:
+    status = sub.get("status", "trialing")
+    update = {
+        "subscription_status": status,
+        "stripe_subscription_id": sub.get("id"),
+        "cancel_at_period_end": bool(sub.get("cancel_at_period_end")),
+        "current_period_end": sub.get("current_period_end"),
+        "subscription_updated_at": now_utc(),
+    }
+    await db.users.update_one({"id": user_id}, {"$set": update})
+
+
+@api.get("/billing/verify")
+async def verify_checkout(session_id: str, user=Depends(current_user)):
+    """Called from the success page to update subscription status immediately
+    (webhooks are the production source of truth; this is a UX speed-up)."""
+    if not STRIPE_API_KEY:
+        raise HTTPException(500, "Stripe not configured")
+    try:
+        session = await run_in_threadpool(
+            stripe.checkout.Session.retrieve,
+            session_id,
+            expand=["subscription"],
+        )
+    except stripe.error.StripeError as e:
+        raise HTTPException(502, f"Stripe error: {str(e)}")
+
+    # Belt-and-braces: make sure the session belongs to this user
+    meta_user = (session.get("metadata") or {}).get("user_id")
+    if meta_user and meta_user != user["id"]:
+        raise HTTPException(403, "Session does not belong to user")
+
+    # Save customer id for later portal / lookup
+    customer = session.get("customer")
+    if isinstance(customer, str) and customer:
+        await db.users.update_one({"id": user["id"]}, {"$set": {"stripe_customer_id": customer}})
+
+    sub = session.get("subscription")
+    if isinstance(sub, dict):
+        await _activate_user_from_subscription(user["id"], sub)
+    elif session.get("status") == "complete":
+        # Fallback: session complete but subscription not expanded — fetch it.
+        sub_id = session.get("subscription") if isinstance(session.get("subscription"), str) else None
+        if sub_id:
+            try:
+                sub_obj = await run_in_threadpool(stripe.Subscription.retrieve, sub_id)
+                await _activate_user_from_subscription(user["id"], sub_obj)
+            except Exception:
+                pass
+
+    # Mark the checkout_sessions row completed
+    await db.checkout_sessions.update_one(
+        {"session_id": session_id, "user_id": user["id"]},
+        {"$set": {"status": session.get("status", "unknown"), "updated_at": now_utc()}},
+    )
+
+    full = await db.users.find_one({"id": user["id"]})
+    return _subscription_summary(clean(full) or {})
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request):
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature", "")
+
+    event: Optional[Dict[str, Any]] = None
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
+        except Exception:
+            raise HTTPException(400, "Invalid webhook signature")
+    else:
+        # No secret configured (preview environment): parse without verifying.
+        import json as _json
+        try:
+            event = _json.loads(payload.decode("utf-8"))
+        except Exception:
+            raise HTTPException(400, "Invalid payload")
+
+    event_id = event.get("id")
+    if event_id:
+        existing = await db.stripe_events.find_one({"id": event_id})
+        if existing:
+            return {"received": True, "duplicate": True}
+        await db.stripe_events.insert_one({"id": event_id, "type": event.get("type"), "received_at": now_utc()})
+
+    etype = event.get("type", "")
+    obj = (event.get("data") or {}).get("object") or {}
+
+    if etype in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
+        customer_id = obj.get("customer")
+        user_doc = await db.users.find_one({"stripe_customer_id": customer_id}) if customer_id else None
+        user_id = (user_doc or {}).get("id") or ((obj.get("metadata") or {}).get("user_id"))
+        if user_id:
+            await _activate_user_from_subscription(user_id, obj)
+
+    return {"received": True}
 
 
 # ---------- Health ----------

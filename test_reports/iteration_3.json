@@ -1,0 +1,53 @@
+{
+  "summary": "Iteration 3 verified half-hour booking slots and the new Stripe-subscription flow end-to-end. Backend: 8/8 pytest cases pass in /app/backend/tests/test_billing_stripe.py — /api/billing/status shape, auth-guards on /billing/status + /billing/checkout, POST /api/billing/checkout returns a Stripe hosted checkout URL (cs_... session_id, url containing checkout.stripe.com) via the Emergent proxy base, GET /api/billing/verify with an unpaid session keeps status in trial/trialing (does not escalate to active), /api/billing/verify requires session_id (422), and POST /api/stripe/webhook (a) accepts unsigned events in preview, (b) is idempotent via stripe_events collection (duplicate=true on replay), (c) activates the user on customer.subscription.updated via metadata.user_id, and (d) returns 400 on malformed body. Frontend web (1280x900): login works, /booking/new now exposes every half-hour slot 08:00→18:30 (all 22 testIDs bk-time-HH:MM present, zero missing); /paywall ‘Start 14-day free trial’ button calls /api/billing/checkout (200) and the paywall client code calls window.location.assign with the Stripe URL (confirmed via backend test; frontend-side URL capture via assign-override intermittent but call reached backend); /billing/success route exists, fires /api/billing/verify, and renders a graceful ‘Almost there / HTTP 502 / Try again’ state when the session_id is invalid (expected); /billing/cancelled route exists and shows the ‘Checkout cancelled’ copy with cancelled-back + cancelled-skip buttons; More tab shows the billing-card driven by /api/billing/status. Deprecated packages detected: none. One real bug surfaced on the More tab billing card — see rca_of_issue.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/billing/status (and /verify)",
+        "issue": "trial_days_left returns 0 and entitled=false for a freshly-registered user whose trial has 14 days left. _subscription_summary parses trial_ends_at as a NAIVE datetime (Mongo drops tzinfo on storage) and then subtracts now_utc() which is tz-aware; this raises TypeError and is swallowed by the broad except → days_left defaults to 0, entitled becomes False, and the UI renders ‘Trial ended / Subscribe’ instead of ‘14 days of trial left / Upgrade’. Reference: /app/backend/server.py:904-922.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/billing/portal",
+        "issue": "Not exercised in preview per main-agent note. Will 400 (‘No active subscription’) for users without stripe_customer_id and may 502 if the Emergent proxy doesn’t route billing_portal.Session.create. Fine for now."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "(tabs)/more.tsx BillingCard",
+        "issue": "Shows ‘Trial ended / Subscribe’ for the demo user even though the account is 0 days old — downstream of the backend tz bug above. Once backend returns correct trial_days_left, the card will self-correct to the intended ‘Upgrade’ copy.",
+        "testID": "billing-card",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_billing_stripe.py",
+    "/app/test_reports/pytest/pytest_billing_stripe.xml"
+  ],
+  "action_items": [
+    "FIX /app/backend/server.py:904-922 _subscription_summary — make trial_ends_at parsing tz-aware. E.g. after datetime.fromisoformat(...) do `if end.tzinfo is None: end = end.replace(tzinfo=timezone.utc)` before the subtraction. Also consider initialising the AsyncIOMotorClient with tz_aware=True so Mongo-stored datetimes come back as aware across the whole codebase.",
+    "After the fix, verify that GET /api/billing/status for demo@petadmin.app returns trial_days_left ≈ 14 (depending on seed timing) and entitled=true, and that the More tab billing-card renders ‘<N> days of trial left / Upgrade’ instead of ‘Trial ended / Subscribe’.",
+    "(optional) Add a Pydantic model (SessionIn) for /billing/verify so missing session_id returns 422 with a clean message (already does — just cleaner contract)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:904-922 broad `except Exception: days_left = 0` masked the real tz subtraction error — prefer explicit (TypeError, ValueError) and log the exception so bugs like this surface in logs.",
+    "server.py:51 AsyncIOMotorClient should be created with `tz_aware=True` so BSON datetimes round-trip as timezone-aware. This is the systemic cause of the trial calc bug and will keep biting any other time-math code.",
+    "server.py:960 stripe.checkout.Session.create is passed `customer_email` but no idempotency_key — multiple rapid taps of ‘Start trial’ would create multiple Stripe sessions / customers. Low risk but worth an idempotency key per user+day.",
+    "paywall.tsx:34 origin is read from window.location.origin on web but will be '' on native — fine today (web-only paywall), but note it before shipping native."
+  ],
+  "updated_files": ["/app/backend/tests/test_billing_stripe.py"],
+  "success_rate": {"backend": "100% (8/8 pytest) — but behavioural bug in trial_days_left not asserted numerically", "frontend": "~85% — all 5 flows reachable; billing-card copy wrong due to backend bug"},
+  "seed_data_creation": "Reused demo@petadmin.app (seeded in iter 1). The webhook test posted one synthetic customer.subscription.updated event to move the user to trialing; the test then explicitly reset the subscription fields in users via a one-off Mongo update so the frontend More-tab test could exercise the trial state. No persistent pollution.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend suites now cover: iter1 /app/backend/tests/backend_test.py (CRUD + onboarding), iter2 /app/backend/tests/test_booking_payments.py, iter3 /app/backend/tests/test_billing_stripe.py. After the trial_days_left fix lands, add an assertion `trial_days_left >= 13` for a freshly-registered user and remove the current permissive status check in test_billing_verify_unpaid_session_keeps_trial. Do NOT complete a real Stripe checkout in preview — the Emergent proxy supports Checkout Sessions + Subscriptions but not Customer.create and /billing/portal is not routed. Frontend time-slot testIDs follow bk-time-HH:MM. Paywall testID: paywall-start-trial. Success/Cancelled testIDs: success-continue, cancelled-back, cancelled-skip. More tab billing testIDs: billing-card (trial state) and billing-manage (paid state).",
+  "rca_of_issue": "BUG: trial_days_left always 0 → ‘Trial ended’ card for brand-new users. REPRO: register (or use demo@) → GET /api/billing/status → see trial_days_left=0 even though trial_ends_at is 14 days in the future. ROOT CAUSE: AsyncIOMotorClient is created without tz_aware=True, so trial_ends_at stored as a tz-aware datetime comes back NAIVE. _subscription_summary converts it to ISO (still naive, no offset) and then datetime.fromisoformat() returns a naive datetime. The subtraction `end - now_utc()` raises `TypeError: can't subtract offset-naive and offset-aware datetimes`, which the broad except catches and defaults days_left=0; entitled then collapses to False. MITIGATION (any one): (a) in _subscription_summary, after fromisoformat, `if end.tzinfo is None: end = end.replace(tzinfo=timezone.utc)`; (b) initialise the Mongo client with tz_aware=True; (c) store trial_ends_at as an ISO string in Mongo. Option (a)+(b) together is safest."
+}

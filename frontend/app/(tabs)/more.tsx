@@ -1,14 +1,23 @@
-import { View, Text, ScrollView, Pressable } from "react-native";
+import { View, Text, ScrollView, Pressable, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
-import { Settings, Scissors, CreditCard, Sparkles, LogOut, ChevronRight, Store, HelpCircle } from "lucide-react-native";
+import { Scissors, CreditCard, Sparkles, LogOut, ChevronRight, Store } from "lucide-react-native";
 import dayjs from "dayjs";
 
 import { apiFetch } from "@/src/api/client";
 import { useAuth } from "@/src/context/auth";
-import { Card } from "@/src/components/Card";
 import { makeStyles, radius, spacing, fontSize, useTheme } from "@/src/theme";
+
+type BillingStatus = {
+  status: string;
+  entitled: boolean;
+  trial_ends_at?: string;
+  trial_days_left: number;
+  cancel_at_period_end: boolean;
+  current_period_end?: number;
+  has_stripe_customer: boolean;
+};
 
 export default function More() {
   const styles = useStyles();
@@ -21,8 +30,10 @@ export default function More() {
     queryKey: ["profile"],
     queryFn: () => apiFetch("/profile"),
   });
-
-  const daysLeft = user?.trial_ends_at ? Math.max(0, dayjs(user.trial_ends_at).diff(dayjs(), "day")) : 0;
+  const { data: billing } = useQuery<BillingStatus>({
+    queryKey: ["billing-status"],
+    queryFn: () => apiFetch("/billing/status"),
+  });
 
   const items: { icon: any; label: string; onPress: () => void; testID: string }[] = [
     { icon: Scissors, label: "Services", onPress: () => router.push("/services"), testID: "more-services" },
@@ -30,6 +41,19 @@ export default function More() {
     { icon: Store, label: "Business profile", onPress: () => router.push("/profile"), testID: "more-profile" },
     { icon: Sparkles, label: "Subscription", onPress: () => router.push("/paywall"), testID: "more-subscription" },
   ];
+
+  const openPortal = async () => {
+    try {
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const res = await apiFetch<{ url: string }>("/billing/portal", {
+        method: "POST",
+        body: JSON.stringify({ origin }),
+      });
+      if (typeof window !== "undefined") window.location.assign(res.url);
+    } catch (e: any) {
+      if (typeof window !== "undefined") window.alert(e.message || "Portal is unavailable right now.");
+    }
+  };
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -45,13 +69,10 @@ export default function More() {
           <View style={{ flex: 1 }}>
             <Text style={styles.bizName}>{profile?.business_name || "Your business"}</Text>
             <Text style={styles.bizSub}>{profile?.owner_name || user?.email}</Text>
-            {daysLeft > 0 ? (
-              <View style={styles.trialPill}>
-                <Text style={styles.trialPillText}>{daysLeft} day{daysLeft === 1 ? "" : "s"} left in trial</Text>
-              </View>
-            ) : null}
           </View>
         </View>
+
+        <BillingCard billing={billing} onSubscribe={() => router.push("/paywall")} onManage={openPortal} />
 
         <View style={styles.list}>
           {items.map(({ icon: Icon, label, onPress, testID }) => (
@@ -76,6 +97,61 @@ export default function More() {
   );
 }
 
+function BillingCard({ billing, onSubscribe, onManage }: { billing?: BillingStatus; onSubscribe: () => void; onManage: () => void }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  if (!billing) {
+    return (
+      <View style={[styles.billingCard, { alignItems: "center" }]}>
+        <ActivityIndicator color={colors.brandPrimary} />
+      </View>
+    );
+  }
+
+  const status = billing.status;
+  const isTrialing = status === "trialing";
+  const isActive = status === "active";
+  const isPaidPlan = isTrialing || isActive;
+
+  if (!isPaidPlan) {
+    const daysLeft = billing.trial_days_left;
+    return (
+      <Pressable testID="billing-card" onPress={onSubscribe} style={styles.billingCard}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.billingTitle}>
+            {daysLeft > 0 ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} of trial left` : "Trial ended"}
+          </Text>
+          <Text style={styles.billingSub}>
+            {daysLeft > 0 ? "Add a card to keep PetAdmin after your trial." : "Subscribe to keep using PetAdmin."}
+          </Text>
+        </View>
+        <View style={styles.billingCta}>
+          <Text style={styles.billingCtaText}>{daysLeft > 0 ? "Upgrade" : "Subscribe"}</Text>
+        </View>
+      </Pressable>
+    );
+  }
+
+  const label = isTrialing ? "Pro — in free trial" : "Pro — active";
+  const sub = billing.cancel_at_period_end
+    ? "Cancels at the end of this period"
+    : isTrialing
+      ? `${billing.trial_days_left} day${billing.trial_days_left === 1 ? "" : "s"} left in your trial`
+      : "£12.99 / month";
+
+  return (
+    <View style={[styles.billingCard, { backgroundColor: colors.brandPrimary, borderColor: colors.brandPrimary }]}>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.billingTitle, { color: colors.onBrand }]}>{label}</Text>
+        <Text style={[styles.billingSub, { color: "rgba(255,255,255,0.8)" }]}>{sub}</Text>
+      </View>
+      <Pressable testID="billing-manage" onPress={onManage} style={styles.manageBtn}>
+        <Text style={styles.manageText}>Manage</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 const useStyles = makeStyles((colors) => ({
   root: { flex: 1, backgroundColor: colors.surface },
   title: { color: colors.onSurface, fontSize: 26, fontWeight: "800" },
@@ -94,15 +170,26 @@ const useStyles = makeStyles((colors) => ({
   profileInitial: { color: colors.onBrand, fontSize: 24, fontWeight: "800" },
   bizName: { color: colors.onSurface, fontSize: fontSize.xl, fontWeight: "800" },
   bizSub: { color: colors.onBrandTertiary, fontSize: fontSize.sm, marginTop: 2 },
-  trialPill: {
-    alignSelf: "flex-start",
-    backgroundColor: colors.brandPrimary,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 4,
-    borderRadius: radius.pill,
-    marginTop: spacing.sm,
+
+  billingCard: {
+    flexDirection: "row", alignItems: "center", gap: spacing.md,
+    padding: spacing.lg, borderRadius: radius.lg,
+    backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border,
   },
-  trialPillText: { color: colors.onBrand, fontSize: 11, fontWeight: "700" },
+  billingTitle: { color: colors.onSurface, fontSize: fontSize.lg, fontWeight: "800" },
+  billingSub: { color: colors.muted, fontSize: fontSize.sm, marginTop: 2 },
+  billingCta: {
+    backgroundColor: colors.brandPrimary,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+  },
+  billingCtaText: { color: colors.onBrand, fontWeight: "700", fontSize: fontSize.base },
+  manageBtn: {
+    backgroundColor: "rgba(255,255,255,0.2)",
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+  },
+  manageText: { color: colors.onBrand, fontWeight: "700", fontSize: fontSize.sm },
 
   list: { gap: spacing.sm },
   item: {
