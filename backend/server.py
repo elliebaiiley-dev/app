@@ -449,6 +449,10 @@ async def get_pet(pid: str, user=Depends(current_user)):
     p["customer"] = clean(cust) if cust else None
     bookings = await db.bookings.find({"user_id": user["id"], "pet_id": pid}).sort("start_at", -1).to_list(500)
     p["bookings"] = [clean(b) for b in bookings]
+    # Payments for this pet (via booking lookup)
+    booking_ids = [b["id"] for b in p["bookings"]]
+    payments = await db.payments.find({"user_id": user["id"], "booking_id": {"$in": booking_ids}}).sort("paid_at", -1).to_list(500)
+    p["payments"] = [clean(x) for x in payments]
     # last / next
     completed = [b for b in p["bookings"] if b.get("status") == "completed"]
     p["last_appointment"] = completed[0]["start_at"] if completed else None
@@ -515,6 +519,32 @@ async def list_bookings(
         b["service_name"] = svc["name"] if svc else ""
         out.append(b)
     return out
+
+
+async def _enrich_booking(b: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    cust = await db.customers.find_one({"id": b["customer_id"], "user_id": user_id})
+    pet = await db.pets.find_one({"id": b["pet_id"], "user_id": user_id})
+    svc = await db.services.find_one({"id": b["service_id"], "user_id": user_id})
+    b["customer_name"] = cust["name"] if cust else ""
+    b["pet_name"] = pet["name"] if pet else ""
+    b["pet_photo_path"] = pet.get("photo_path", "") if pet else ""
+    b["service_name"] = svc["name"] if svc else ""
+    # Payment totals
+    payments = await db.payments.find({"user_id": user_id, "booking_id": b["id"]}).sort("paid_at", -1).to_list(500)
+    paid_total = sum(float(p.get("amount", 0)) for p in payments)
+    b["paid_total"] = round(paid_total, 2)
+    b["outstanding"] = round(max(0.0, float(b.get("price", 0)) - paid_total), 2)
+    b["payments"] = [clean(p) for p in payments]
+    return b
+
+
+@api.get("/bookings/{bid}")
+async def get_booking(bid: str, user=Depends(current_user)):
+    b = await db.bookings.find_one({"id": bid, "user_id": user["id"]})
+    if not b:
+        raise HTTPException(404, "Not found")
+    b = clean(b)
+    return await _enrich_booking(b, user["id"])
 
 
 @api.post("/bookings")
@@ -648,11 +678,16 @@ async def dashboard(user=Depends(current_user)):
         b["service_name"] = svc["name"] if svc else ""
         upcoming.append(b)
 
-    # Outstanding payments: completed bookings with payments < price
-    completed = await db.bookings.find({"user_id": user_id, "status": "completed"}).to_list(5000)
+    # Outstanding payments: all non-cancelled bookings where paid < price.
+    # Status is NEVER changed automatically — the business keeps full control.
+    billable = await db.bookings.find({
+        "user_id": user_id,
+        "status": {"$nin": ["cancelled"]},
+        "deleted_at": {"$exists": False},
+    }).to_list(5000)
     outstanding_total = 0.0
     outstanding_count = 0
-    for b in completed:
+    for b in billable:
         paid = await db.payments.aggregate([
             {"$match": {"user_id": user_id, "booking_id": b["id"]}},
             {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
@@ -810,7 +845,7 @@ async def _seed_demo_data(user_id: str) -> None:
             "start_at": today_time.isoformat(),
             "duration_minutes": svc["duration_minutes"],
             "price": svc["price"],
-            "notes": "", "status": "confirmed" if i > 0 else "completed",
+            "notes": "", "status": "confirmed",
             "created_at": now_utc(),
         })
         upcoming_time = today + timedelta(days=i + 2, hours=10 - today.hour)

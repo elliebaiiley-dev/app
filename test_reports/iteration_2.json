@@ -1,0 +1,34 @@
+{
+  "summary": "PetAdmin iteration 2 end-to-end verification. Backend: 8/8 new pytest tests pass against the public URL covering GET /api/bookings/{id} enriched response (price/paid_total/outstanding/payments), POST /api/payments updating paid_total+outstanding, status persistence across all 4 values (confirmed/completed/cancelled/no_show), POST /api/bookings default status=confirmed, past-dated confirmed booking NOT auto-moving to completed after dashboard + list GETs, dashboard outstanding_total including non-cancelled unpaid bookings (not only completed), customer timeline containing newly-recorded payment, cancelled bookings excluded from dashboard outstanding. Frontend web (1280x900): PetAdmin loads as website (document.title='PetAdmin'), login flow works with demo@petadmin.app/petadmin123, dashboard Outstanding card dropped £773.77 → £772.77 after recording a £1.00 payment confirming end-to-end integration. Booking detail shows Total/Paid/Outstanding breakdown. All 4 status chips (confirmed/completed/cancelled/no_show) are present and tappable; setting a booking to Cancelled persists after back+reopen (Cancelled StatusPill still visible). New booking created from dashboard defaults to Confirmed and returns to dashboard. No red-screen errors. Only non-blocking console warning repeated from iteration 1: '\"shadow*\" style props are deprecated. Use \"boxShadow\"' (React Native Web deprecation, carried over). Deprecated packages detected: none.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "global (RN web)", "issues": ["Console warning (carried over from iter 1): '\"shadow*\" style props are deprecated. Use \"boxShadow\"'. Not blocking."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_booking_payments.py",
+    "/app/test_reports/pytest/pytest_booking_payments.xml",
+    "/app/backend/tests/backend_test.py"
+  ],
+  "action_items": [
+    "Optional: migrate remaining shadow* style props to boxShadow in theme/components to silence RN Web deprecation warning (non-blocking)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:681-699 dashboard 'billable' aggregation does N+1 payments.aggregate() per booking — fine for demo volumes but should be a single $lookup/$group pipeline before scale.",
+    "server.py:593-601 POST /bookings/{id}/status accepts raw dict; works but a Pydantic model (StatusIn) would give cleaner 422 errors instead of 400 on malformed JSON.",
+    "booking/[id].tsx:111 isPaid uses `outstanding <= 0.01 && total > 0` — correctly handles zero-price bookings. OK."
+  ],
+  "updated_files": ["/app/backend/tests/test_booking_payments.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Used existing demo@petadmin.app seeded tenant. Tests created several extra bookings + a few £1.00/half-price payments which remain in the tenant (not cleaned up — safe because they do not block retests).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "All three user-reported fixes are verified end-to-end: (1) booking detail breakdown + payment recording reduces outstanding and surfaces in customer timeline; (2) status is manual-only — new bookings default to confirmed, past-dated confirmed bookings stay confirmed across GETs/dashboard calls, all 4 chips persist after navigation; (3) runs correctly as a website at EXPO_PUBLIC_BACKEND_URL with title 'PetAdmin'. Backend regression suite: /app/backend/tests/backend_test.py (iter 1) + /app/backend/tests/test_booking_payments.py (iter 2). Dashboard outstanding is now computed across all non-cancelled bookings — expect larger values than the pre-fix 'completed only' baseline."
+}
