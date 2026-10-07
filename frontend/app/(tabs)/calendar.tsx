@@ -13,7 +13,7 @@ import { EmptyState } from "@/src/components/Card";
 import { formatTime, money } from "@/src/utils/format";
 import { makeStyles, radius, spacing, fontSize, useTheme } from "@/src/theme";
 
-type View = "day" | "week";
+type ViewMode = "day" | "week";
 
 export default function CalendarScreen() {
   const styles = useStyles();
@@ -22,7 +22,7 @@ export default function CalendarScreen() {
   const { colors } = useTheme();
   const qc = useQueryClient();
   const [anchor, setAnchor] = useState(() => dayjs());
-  const [mode, setMode] = useState<View>("day");
+  const [mode, setMode] = useState<ViewMode>("day");
 
   const range = useMemo(() => {
     if (mode === "day") {

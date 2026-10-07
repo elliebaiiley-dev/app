@@ -2,7 +2,7 @@ import { View, Text, ScrollView, Pressable, ActivityIndicator } from "react-nati
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
-import { Scissors, CreditCard, Sparkles, LogOut, ChevronRight, Store } from "lucide-react-native";
+import { Scissors, CreditCard, Sparkles, LogOut, ChevronRight, Store, Users } from "lucide-react-native";
 import dayjs from "dayjs";
 
 import { apiFetch } from "@/src/api/client";
@@ -35,11 +35,13 @@ export default function More() {
     queryFn: () => apiFetch("/billing/status"),
   });
 
+  const isOwner = user?.role === "owner";
   const items: { icon: any; label: string; onPress: () => void; testID: string }[] = [
     { icon: Scissors, label: "Services", onPress: () => router.push("/services"), testID: "more-services" },
     { icon: CreditCard, label: "Payments", onPress: () => router.push("/payments"), testID: "more-payments" },
+    { icon: Users, label: "Staff & invites", onPress: () => router.push("/staff"), testID: "more-staff" },
     { icon: Store, label: "Business profile", onPress: () => router.push("/profile"), testID: "more-profile" },
-    { icon: Sparkles, label: "Subscription", onPress: () => router.push("/paywall"), testID: "more-subscription" },
+    ...(isOwner ? [{ icon: Sparkles, label: "Subscription", onPress: () => router.push("/paywall"), testID: "more-subscription" } as const] : []),
   ];
 
   const openPortal = async () => {
@@ -69,10 +71,15 @@ export default function More() {
           <View style={{ flex: 1 }}>
             <Text style={styles.bizName}>{profile?.business_name || "Your business"}</Text>
             <Text style={styles.bizSub}>{profile?.owner_name || user?.email}</Text>
+            {user?.role ? (
+              <View style={styles.rolePill}>
+                <Text style={styles.rolePillText}>{user.role.toUpperCase()}</Text>
+              </View>
+            ) : null}
           </View>
         </View>
 
-        <BillingCard billing={billing} onSubscribe={() => router.push("/paywall")} onManage={openPortal} />
+        <BillingCard billing={billing} isOwner={isOwner} onSubscribe={() => router.push("/paywall")} onManage={openPortal} />
 
         <View style={styles.list}>
           {items.map(({ icon: Icon, label, onPress, testID }) => (
@@ -97,7 +104,7 @@ export default function More() {
   );
 }
 
-function BillingCard({ billing, onSubscribe, onManage }: { billing?: BillingStatus; onSubscribe: () => void; onManage: () => void }) {
+function BillingCard({ billing, isOwner, onSubscribe, onManage }: { billing?: BillingStatus; isOwner: boolean; onSubscribe: () => void; onManage: () => void }) {
   const styles = useStyles();
   const { colors } = useTheme();
   if (!billing) {
@@ -116,18 +123,27 @@ function BillingCard({ billing, onSubscribe, onManage }: { billing?: BillingStat
   if (!isPaidPlan) {
     const daysLeft = billing.trial_days_left;
     return (
-      <Pressable testID="billing-card" onPress={onSubscribe} style={styles.billingCard}>
+      <Pressable
+        testID="billing-card"
+        onPress={isOwner ? onSubscribe : undefined}
+        style={styles.billingCard}
+        disabled={!isOwner}
+      >
         <View style={{ flex: 1 }}>
           <Text style={styles.billingTitle}>
             {daysLeft > 0 ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} of trial left` : "Trial ended"}
           </Text>
           <Text style={styles.billingSub}>
-            {daysLeft > 0 ? "Add a card to keep PetAdmin after your trial." : "Subscribe to keep using PetAdmin."}
+            {isOwner
+              ? (daysLeft > 0 ? "Add a card to keep PetAdmin after your trial." : "Subscribe to keep using PetAdmin.")
+              : "Only the business owner can manage billing."}
           </Text>
         </View>
-        <View style={styles.billingCta}>
-          <Text style={styles.billingCtaText}>{daysLeft > 0 ? "Upgrade" : "Subscribe"}</Text>
-        </View>
+        {isOwner ? (
+          <View style={styles.billingCta}>
+            <Text style={styles.billingCtaText}>{daysLeft > 0 ? "Upgrade" : "Subscribe"}</Text>
+          </View>
+        ) : null}
       </Pressable>
     );
   }
@@ -145,8 +161,8 @@ function BillingCard({ billing, onSubscribe, onManage }: { billing?: BillingStat
         <Text style={[styles.billingTitle, { color: colors.onBrand }]}>{label}</Text>
         <Text style={[styles.billingSub, { color: "rgba(255,255,255,0.8)" }]}>{sub}</Text>
       </View>
-      <Pressable testID="billing-manage" onPress={onManage} style={styles.manageBtn}>
-        <Text style={styles.manageText}>Manage</Text>
+      <Pressable testID="billing-manage" onPress={isOwner ? onManage : undefined} disabled={!isOwner} style={[styles.manageBtn, !isOwner && { opacity: 0.5 }]}>
+        <Text style={styles.manageText}>{isOwner ? "Manage" : "Owner only"}</Text>
       </Pressable>
     </View>
   );
@@ -170,6 +186,14 @@ const useStyles = makeStyles((colors) => ({
   profileInitial: { color: colors.onBrand, fontSize: 24, fontWeight: "800" },
   bizName: { color: colors.onSurface, fontSize: fontSize.xl, fontWeight: "800" },
   bizSub: { color: colors.onBrandTertiary, fontSize: fontSize.sm, marginTop: 2 },
+  rolePill: {
+    alignSelf: "flex-start",
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.sm, paddingVertical: 2,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brandPrimary,
+  },
+  rolePillText: { color: colors.onBrand, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
 
   billingCard: {
     flexDirection: "row", alignItems: "center", gap: spacing.md,

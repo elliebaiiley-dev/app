@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 5 — multi-tenant (business + memberships + invites) end-to-end. BACKEND: added /app/backend/tests/test_multitenant.py (19 tests across 11 classes) covering: separate owners get separate business_ids, /auth/me returns business_id+role=owner, data isolation (Business A cannot GET/PUT/DELETE B's customer/pet/booking — all 404), services/customers/staff listings never leak B's data, cross-business booking/payment creation rejected 400, invite + accept flow (invite_link + token returned, GET /invites/{token} returns business_name/role, POST /invites/accept creates user+membership and returns JWT with business_id/role=staff, staff can hit /customers /pets /bookings /dashboard /staff, re-accept returns 404 idempotency, staff invite from staff account returns 403), role gating — staff hitting /billing/checkout, /billing/portal, /billing/verify, /staff/invite, /staff/{id}/deactivate|reactivate, DELETE /staff/{id}, DELETE /invites/{id} ALL 403, 10-staff bulk invite share one business subscription, deactivation blocks protected endpoints (403) AND blocks login (403) when all memberships deactivated, reactivation restores access, trial expiry (trial_ends_at past → entitled=false), shared entitlement (owner+staff see same subscription_status), file cross-business access denied (403, upload-dependent — skipped only if storage unreachable), legacy demo@petadmin.app still logs in, has role=owner+business_id and 5+ seeded customers, Stripe checkout returns stripe URL for owner. FULL BACKEND SUITE: 56/56 pass (new 19 + 37 pre-existing). FRONTEND (web smoke @ 390x844): logged in as demo owner — /staff shows invite form + Send invite + Copy-link row after send; /invite/{token} shows 'Happy Tails Grooming' + password form + Join team; accepting lands on dashboard; new staff More tab correctly HIDES Subscription row, keeps Staff & invites row, shows STAFF pill; /staff for staff user shows 'Only the business owner can invite or remove staff.' and NO invite form. BUG FOUND + FIXED: GET /api/invites/{token} and POST /api/invites/accept returned 500 TypeError: can't compare offset-naive and offset-aware datetimes at server.py:994 and :1010 — same pattern as iter4 billing bug. Fixed in-place by coercing expires_at to UTC-aware before comparison. All 19 new tests now pass. Deprecated packages detected: none. SafeAreaView issues detected: none.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/invites/{token} & POST /api/invites/accept (server.py:994, :1010)", "issue": "FIXED by testing agent. expires_at datetime from Mongo is tz-naive, compared to tz-aware now_utc() → 500 TypeError. Added `if expires_at.tzinfo is None: expires_at = expires_at.replace(tzinfo=timezone.utc)` before the `<` check. Same class of bug as iter4 billing. Recommend initialising AsyncIOMotorClient(tz_aware=True) in server.py:49 so every datetime round-tripped from Mongo is aware by construction."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_multitenant.py",
+    "/app/test_reports/pytest/pytest_multitenant.xml"
+  ],
+  "action_items": [
+    "(low) Harden tz handling globally — pass tz_aware=True to AsyncIOMotorClient in server.py:49 so all datetime fields returned from Mongo are offset-aware; this prevents further occurrences of the invite/billing tz bug pattern.",
+    "(optional) Convert the staff_sess fixture in test_multitenant.py::TestRoleGating to a classmethod to silence the Pytest-10 deprecation warning (functional, cosmetic only)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:994 and :1010 were tz-naive-vs-aware comparisons — identical pattern to the already-fixed billing bug; the whole file still relies on local .replace(tzinfo=UTC) coercion instead of a tz_aware Mongo client, so this class of regression remains latent (e.g. any future `trial_ends_at`/`expires_at` comparison).",
+    "server.py:949 invite_staff declares `request: Request = None` as a trailing param — works today but FastAPI dependency ordering would be safer with `request: Request` before the body param (not blocking)."
+  ],
+  "updated_files": [
+    "/app/backend/server.py (tz-coercion for invites expires_at at lines 993-998 and 1009-1013)",
+    "/app/backend/tests/test_multitenant.py (new)"
+  ],
+  "success_rate": {"backend": "100% (56/56 pytest, 19 new multitenant)", "frontend": "100% — owner & staff More/Staff/Invite flows all behave correctly on mobile viewport 390x844"},
+  "seed_data_creation": "test_multitenant.py creates ownerA/ownerB users + businesses + 1 customer/pet/service/booking each, invites multiple TEST_ staff accounts. The trial-expiry and shared-entitlement tests mutate business.subscription_status in Mongo and restore it from the pre-test snapshot in a try/finally. Frontend smoke created one invited staff user `websmoke_<ts>@test.pet` in the demo business. These are harmless TEST_-prefixed artefacts; cleanup is best-effort via unique uuids.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Multi-tenant isolation + staff invites + role gating + shared entitlement + trial expiry + legacy-demo compatibility all verified green. Regression suite lives at /app/backend/tests/test_multitenant.py. Run with the project's pytest.ini (-n 2 --dist loadscope) — the suite depends on xdist. Known latent risk: any new endpoint doing `<` / `>` on a Mongo-stored datetime without `tzinfo=UTC` will 500 — switch AsyncIOMotorClient to tz_aware=True (server.py:49) to kill the whole class of bug.",
+  "rca_of_issue": "Invite endpoints returned 500 TypeError: can't compare offset-naive and offset-aware datetimes. ROOT CAUSE: db.invites stores expires_at as datetime (tz-aware when written via now_utc()+timedelta), but AsyncIOMotorClient was constructed without tz_aware=True so BSON round-trip strips tzinfo on read. The subsequent `expires_at < now_utc()` compared naive-vs-aware → TypeError. FIX APPLIED to server.py GET /invites/{token} (lines 993-998) and POST /invites/accept (lines 1009-1013): if expires_at.tzinfo is None → expires_at.replace(tzinfo=timezone.utc) before comparing. Verified by test_multitenant.py::TestStaffInvites::test_owner_invite_and_accept_flow and the frontend smoke accepting a real invite."
+}

@@ -6,9 +6,11 @@ import { storage } from "@/src/utils/storage";
 export type User = {
   id: string;
   email: string;
+  name?: string;
   onboarded: boolean;
   created_at: string;
-  trial_ends_at: string;
+  business_id?: string | null;
+  role?: string | null;
 };
 
 type AuthState = {
@@ -18,6 +20,7 @@ type AuthState = {
   signUp: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
+  acceptInvite: (token: string, password: string, name?: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -67,8 +70,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   };
 
+  const acceptInvite = async (token: string, password: string, name?: string) => {
+    const data = await apiFetch<{ access_token: string; user: User }>("/invites/accept", {
+      method: "POST",
+      body: JSON.stringify({ token, password, name: name || "" }),
+    });
+    await storage.secureSet(TOKEN_KEY, data.access_token);
+    setUser(data.user);
+  };
+
   const value = useMemo(
-    () => ({ user, loading, signIn, signUp, signOut, refresh }),
+    () => ({ user, loading, signIn, signUp, signOut, refresh, acceptInvite }),
     [user, loading],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
