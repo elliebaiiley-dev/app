@@ -3,13 +3,14 @@ import { View, Text, Pressable, ScrollView, ActivityIndicator, Share, Platform }
 import { useLocalSearchParams, useRouter, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, Check, X, UserX, Trash2, CalendarClock } from "lucide-react-native";
+import { ChevronLeft, Check, X, UserX, Trash2, CalendarClock, Share2, Zap } from "lucide-react-native";
 
 import { PetAvatar } from "@/src/components/PetAvatar";
 import { StatusPill } from "@/src/components/StatusPill";
 import { SectionHeader } from "@/src/components/Card";
 import { Button } from "@/src/components/Button";
 import { Field } from "@/src/components/Field";
+import { ShareSheet } from "@/src/components/ShareSheet";
 import { apiFetch } from "@/src/api/client";
 import { formatDateFull, formatTime, formatDateTime, money } from "@/src/utils/format";
 import { makeStyles, radius, spacing, fontSize, useTheme } from "@/src/theme";
@@ -33,7 +34,9 @@ export default function BookingDetail() {
   const [payAmount, setPayAmount] = useState<string>("");
   const [payMethod, setPayMethod] = useState<"cash" | "card" | "bank" | "other">("cash");
   const [savingPay, setSavingPay] = useState(false);
+  const [markingPaid, setMarkingPaid] = useState(false);
   const [payErr, setPayErr] = useState("");
+  const [sheet, setSheet] = useState<{ title: string; message: string; phone: string } | null>(null);
 
   const outstanding = b?.outstanding ?? 0;
   const total = b?.price ?? 0;
@@ -78,6 +81,38 @@ export default function BookingDetail() {
     }
   };
 
+  const markFullyPaid = async () => {
+    if (!b || outstanding <= 0.01) return;
+    setMarkingPaid(true);
+    try {
+      await apiFetch("/payments", {
+        method: "POST",
+        body: JSON.stringify({ booking_id: b.id, amount: outstanding, method: "cash" }),
+      });
+      invalidateAll();
+      await refetch();
+    } catch (e) {
+      console.error("mark paid failed", e);
+    } finally {
+      setMarkingPaid(false);
+    }
+  };
+
+  const shareReceipt = async (payment: any) => {
+    if (!b) return;
+    const text = buildReceiptText({
+      business: b.customer_name ? "" : "",  // business name retrieved below if needed
+      customer: b.customer_name,
+      pet: b.pet_name,
+      service: b.service_name,
+      dateIso: b.start_at,
+      amount: payment.amount,
+      method: payment.method,
+      paidAtIso: payment.paid_at,
+    });
+    setSheet({ title: "Payment receipt", message: text, phone: "" });
+  };
+
   const remove = async () => {
     if (!b) return;
     await apiFetch(`/bookings/${b.id}`, { method: "DELETE" });
@@ -88,19 +123,8 @@ export default function BookingDetail() {
   const generateRebooking = async () => {
     if (!b) return;
     try {
-      const res = await apiFetch<{ message: string }>(`/rebooking/message?pet_id=${b.pet_id}`);
-      if (Platform.OS === "web") {
-        try {
-          if (typeof navigator !== "undefined" && (navigator as any).clipboard) {
-            await (navigator as any).clipboard.writeText(res.message);
-          }
-        } catch {
-          // Clipboard write can fail in insecure contexts — ignore and still show the alert.
-        }
-        if (typeof window !== "undefined") window.alert(`Rebooking message copied:\n\n${res.message}`);
-      } else {
-        await Share.share({ message: res.message });
-      }
+      const res = await apiFetch<{ message: string; customer_phone: string }>(`/rebooking/message?pet_id=${b.pet_id}`);
+      setSheet({ title: "Rebooking message", message: res.message, phone: res.customer_phone || "" });
     } catch (e) {
       console.error("rebooking message failed", e);
     }
@@ -175,9 +199,25 @@ export default function BookingDetail() {
 
             {outstanding > 0.01 ? (
               <>
+                <Pressable
+                  testID="pay-mark-paid"
+                  onPress={markFullyPaid}
+                  disabled={markingPaid}
+                  style={({ pressed }) => [styles.markPaidBtn, pressed && { opacity: 0.85 }, markingPaid && { opacity: 0.6 }]}
+                >
+                  {markingPaid ? (
+                    <ActivityIndicator color={colors.onBrand} />
+                  ) : (
+                    <>
+                      <Zap size={16} color={colors.onBrand} />
+                      <Text style={styles.markPaidText}>Mark fully paid ({money(outstanding)})</Text>
+                    </>
+                  )}
+                </Pressable>
+
                 <Field
                   testID="pay-amount"
-                  label="Record payment (£)"
+                  label="Or record a partial payment (£)"
                   value={payAmount}
                   onChangeText={(v) => { setPayAmount(v); if (payErr) setPayErr(""); }}
                   keyboardType="decimal-pad"
@@ -225,6 +265,15 @@ export default function BookingDetail() {
                       <Text style={styles.payItemAmount}>{money(p.amount)}</Text>
                       <Text style={styles.payItemMeta}>{formatDateTime(p.paid_at)} • {p.method}</Text>
                     </View>
+                    <Pressable
+                      testID={`pay-share-${p.id}`}
+                      onPress={() => shareReceipt(p)}
+                      hitSlop={10}
+                      style={styles.shareIconBtn}
+                    >
+                      <Share2 size={14} color={colors.brandPrimary} />
+                      <Text style={styles.shareIconText}>Receipt</Text>
+                    </Pressable>
                   </View>
                 ))}
               </View>
@@ -234,8 +283,33 @@ export default function BookingDetail() {
 
         <Button testID="bk-rebook-msg" title="Generate rebooking message" variant="secondary" onPress={generateRebooking} />
       </ScrollView>
+      <ShareSheet
+        visible={!!sheet}
+        title={sheet?.title ?? ""}
+        message={sheet?.message ?? ""}
+        phone={sheet?.phone}
+        onClose={() => setSheet(null)}
+      />
     </View>
   );
+}
+
+function buildReceiptText(r: { business: string; customer: string; pet: string; service: string; dateIso: string; amount: number; method: string; paidAtIso: string }): string {
+  const paidWhen = r.paidAtIso ? new Date(r.paidAtIso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "";
+  const applyDay = r.dateIso ? new Date(r.dateIso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "";
+  return [
+    "PetAdmin Payment Receipt",
+    "",
+    `Customer: ${r.customer}`,
+    `Pet: ${r.pet}`,
+    `Service: ${r.service}${applyDay ? ` on ${applyDay}` : ""}`,
+    "",
+    `Amount paid: £${Number(r.amount).toFixed(2)}`,
+    `Method: ${r.method}`,
+    paidWhen ? `Date paid: ${paidWhen}` : "",
+    "",
+    "Thank you!",
+  ].filter(Boolean).join("\n");
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
@@ -339,6 +413,29 @@ const useStyles = makeStyles((colors) => ({
     color: colors.success, fontSize: fontSize.base, fontWeight: "600",
     textAlign: "center", paddingVertical: spacing.md,
   },
+
+  markPaidBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    minHeight: 52,
+    paddingHorizontal: spacing.xl,
+    borderRadius: radius.pill,
+    backgroundColor: colors.success,
+  },
+  markPaidText: { color: colors.onSuccess, fontWeight: "800", fontSize: fontSize.lg },
+
+  shareIconBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brandTertiary,
+  },
+  shareIconText: { color: colors.brandPrimary, fontSize: fontSize.sm, fontWeight: "700" },
 
   payHistory: { gap: spacing.sm, marginTop: spacing.sm },
   payHistoryTitle: { color: colors.muted, fontSize: fontSize.sm, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 },

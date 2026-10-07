@@ -10,6 +10,7 @@ import { AuthImage } from "@/src/components/AuthImage";
 import { Card, EmptyState, SectionHeader } from "@/src/components/Card";
 import { StatusPill } from "@/src/components/StatusPill";
 import { Button } from "@/src/components/Button";
+import { ShareSheet } from "@/src/components/ShareSheet";
 import { apiFetch } from "@/src/api/client";
 import { ageFromDob, formatDateFull, money } from "@/src/utils/format";
 import { makeStyles, radius, spacing, fontSize, useTheme } from "@/src/theme";
@@ -30,25 +31,13 @@ export default function PetDetail() {
   useFocusEffect(useCallback(() => { refetch(); }, [refetch]));
 
   const [generating, setGenerating] = useState(false);
+  const [sheet, setSheet] = useState<{ message: string; phone: string } | null>(null);
 
   const generateMessage = async () => {
     setGenerating(true);
     try {
       const res = await apiFetch<{ message: string; customer_phone: string }>(`/rebooking/message?pet_id=${id}`);
-      if (Platform.OS === "web") {
-        try {
-          if (typeof navigator !== "undefined" && (navigator as any).clipboard) {
-            await (navigator as any).clipboard.writeText(res.message);
-          }
-        } catch {
-          // Clipboard write can fail in insecure contexts / headless — ignore.
-        }
-        if (typeof window !== "undefined") {
-          window.alert(`Rebooking message copied to clipboard:\n\n${res.message}`);
-        }
-      } else {
-        await Share.share({ message: res.message });
-      }
+      setSheet({ message: res.message, phone: res.customer_phone || "" });
     } catch (e) {
       console.error("rebooking message failed", e);
     } finally {
@@ -170,6 +159,13 @@ export default function PetDetail() {
           />
         </View>
       </ScrollView>
+      <ShareSheet
+        visible={!!sheet}
+        title="Rebooking message"
+        message={sheet?.message ?? ""}
+        phone={sheet?.phone}
+        onClose={() => setSheet(null)}
+      />
     </View>
   );
 }

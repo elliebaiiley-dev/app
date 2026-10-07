@@ -1379,6 +1379,137 @@ async def seed_demo(member: Member = Depends(current_member)):
     return {"ok": True}
 
 
+# ---------- CSV export ----------
+def _csv_escape(v: Any) -> str:
+    s = "" if v is None else str(v)
+    if any(c in s for c in [",", "\"", "\n", "\r"]):
+        s = "\"" + s.replace("\"", "\"\"") + "\""
+    return s
+
+
+async def _resolve_business_from_token(token: str) -> Optional[Dict[str, Any]]:
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        user_id = payload.get("sub")
+    except Exception:
+        return None
+    user = await db.users.find_one({"id": user_id})
+    if not user:
+        return None
+    m = await _resolve_active_membership(clean(user))
+    if not m:
+        return None
+    return {"user_id": user_id, "business_id": m["business_id"], "role": m.get("role", "staff")}
+
+
+@app.get("/api/export/weekly.csv")
+async def export_weekly_csv(request: Request, token: Optional[str] = Query(None)):
+    """Export this week's bookings + payments as CSV. Accepts auth via header or ?token=."""
+    jwt_token: Optional[str] = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        jwt_token = auth_header.split(" ", 1)[1]
+    elif token:
+        jwt_token = token
+    if not jwt_token:
+        raise HTTPException(401, "Not authenticated")
+    ctx = await _resolve_business_from_token(jwt_token)
+    if not ctx:
+        raise HTTPException(403, "Not a member of any business")
+    business_id = ctx["business_id"]
+
+    today = datetime.now().date()
+    week_start = today - timedelta(days=today.weekday())
+    week_end = week_start + timedelta(days=6)
+    start_iso = datetime.combine(week_start, datetime.min.time()).isoformat()
+    end_iso = datetime.combine(week_end, datetime.max.time()).isoformat()
+
+    bookings = await db.bookings.find({
+        "business_id": business_id,
+        "start_at": {"$gte": start_iso, "$lte": end_iso},
+        "deleted_at": {"$exists": False},
+    }).sort("start_at", 1).to_list(5000)
+
+    pay_lookup: Dict[str, float] = {}
+    agg = db.payments.aggregate([
+        {"$match": {"business_id": business_id, "paid_at": {"$gte": start_iso, "$lte": end_iso}}},
+        {"$group": {"_id": "$booking_id", "total": {"$sum": "$amount"}}},
+    ])
+    async for row in agg:
+        pay_lookup[row["_id"]] = row["total"]
+
+    payments = await db.payments.find({
+        "business_id": business_id,
+        "paid_at": {"$gte": start_iso, "$lte": end_iso},
+    }).sort("paid_at", 1).to_list(5000)
+
+    biz = await _get_business(business_id)
+    biz_name = (biz or {}).get("name", "PetAdmin")
+
+    lines: List[str] = []
+    lines.append(f"PetAdmin weekly export — {biz_name}")
+    lines.append(f"Week: {week_start.isoformat()} to {week_end.isoformat()}")
+    lines.append("")
+    lines.append("Bookings")
+    lines.append(",".join(["Date", "Time", "Customer", "Pet", "Service", "Duration (min)", "Status", "Price (GBP)", "Paid (GBP)", "Outstanding (GBP)", "Notes"]))
+    total_booked = 0.0
+    total_paid = 0.0
+    for b in bookings:
+        cust = await db.customers.find_one({"id": b["customer_id"], "business_id": business_id})
+        pet = await db.pets.find_one({"id": b["pet_id"], "business_id": business_id})
+        svc = await db.services.find_one({"id": b["service_id"], "business_id": business_id})
+        start_at = b.get("start_at", "")
+        date_part, _, time_part = start_at.partition("T")
+        time_hhmm = time_part[:5] if time_part else ""
+        price = float(b.get("price", 0))
+        paid = float(pay_lookup.get(b["id"], 0.0))
+        outstanding = max(0.0, price - paid) if b.get("status") != "cancelled" else 0.0
+        if b.get("status") != "cancelled":
+            total_booked += price
+            total_paid += paid
+        lines.append(",".join([
+            _csv_escape(date_part),
+            _csv_escape(time_hhmm),
+            _csv_escape(cust["name"] if cust else ""),
+            _csv_escape(pet["name"] if pet else ""),
+            _csv_escape(svc["name"] if svc else ""),
+            _csv_escape(b.get("duration_minutes", "")),
+            _csv_escape(b.get("status", "")),
+            _csv_escape(f"{price:.2f}"),
+            _csv_escape(f"{paid:.2f}"),
+            _csv_escape(f"{outstanding:.2f}"),
+            _csv_escape(b.get("notes", "") or ""),
+        ]))
+    lines.append("")
+    lines.append(f"Totals (excl. cancelled),,,,,,,{total_booked:.2f},{total_paid:.2f},{max(0.0, total_booked - total_paid):.2f}")
+
+    lines.append("")
+    lines.append("Payments")
+    lines.append(",".join(["Paid at", "Customer", "Pet", "Amount (GBP)", "Method"]))
+    for p in payments:
+        booking = await db.bookings.find_one({"id": p.get("booking_id"), "business_id": business_id})
+        cust = await db.customers.find_one({"id": p.get("customer_id"), "business_id": business_id})
+        pet = None
+        if booking:
+            pet = await db.pets.find_one({"id": booking["pet_id"], "business_id": business_id})
+        paid_at = p.get("paid_at", "")
+        lines.append(",".join([
+            _csv_escape(paid_at),
+            _csv_escape(cust["name"] if cust else ""),
+            _csv_escape(pet["name"] if pet else ""),
+            _csv_escape(f"{float(p.get('amount', 0)):.2f}"),
+            _csv_escape(p.get("method", "")),
+        ]))
+
+    body = "\r\n".join(lines) + "\r\n"
+    filename = f"petadmin-{week_start.isoformat()}.csv"
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\""},
+    )
+
+
 # ---------- Health ----------
 @api.get("/")
 async def root():

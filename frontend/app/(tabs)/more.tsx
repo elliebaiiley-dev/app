@@ -2,10 +2,10 @@ import { View, Text, ScrollView, Pressable, ActivityIndicator } from "react-nati
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
-import { Scissors, CreditCard, Sparkles, LogOut, ChevronRight, Store, Users } from "lucide-react-native";
+import { Scissors, CreditCard, Sparkles, LogOut, ChevronRight, Store, Users, Download } from "lucide-react-native";
 import dayjs from "dayjs";
 
-import { apiFetch } from "@/src/api/client";
+import { apiFetch, BACKEND_URL, getToken } from "@/src/api/client";
 import { useAuth } from "@/src/context/auth";
 import { makeStyles, radius, spacing, fontSize, useTheme } from "@/src/theme";
 
@@ -36,13 +36,6 @@ export default function More() {
   });
 
   const isOwner = user?.role === "owner";
-  const items: { icon: any; label: string; onPress: () => void; testID: string }[] = [
-    { icon: Scissors, label: "Services", onPress: () => router.push("/services"), testID: "more-services" },
-    { icon: CreditCard, label: "Payments", onPress: () => router.push("/payments"), testID: "more-payments" },
-    { icon: Users, label: "Staff & invites", onPress: () => router.push("/staff"), testID: "more-staff" },
-    { icon: Store, label: "Business profile", onPress: () => router.push("/profile"), testID: "more-profile" },
-    ...(isOwner ? [{ icon: Sparkles, label: "Subscription", onPress: () => router.push("/paywall"), testID: "more-subscription" } as const] : []),
-  ];
 
   const openPortal = async () => {
     try {
@@ -56,6 +49,27 @@ export default function More() {
       if (typeof window !== "undefined") window.alert(e.message || "Portal is unavailable right now.");
     }
   };
+
+  const exportCsv = async () => {
+    try {
+      const token = await getToken();
+      const url = `${BACKEND_URL}/api/export/weekly.csv?token=${encodeURIComponent(token ?? "")}`;
+      if (typeof window !== "undefined") {
+        window.open(url, "_blank");
+      }
+    } catch (e: any) {
+      if (typeof window !== "undefined") window.alert(e.message || "Export failed");
+    }
+  };
+
+  const items: { icon: any; label: string; onPress: () => void; testID: string }[] = [
+    { icon: Scissors, label: "Services", onPress: () => router.push("/services"), testID: "more-services" },
+    { icon: CreditCard, label: "Payments", onPress: () => router.push("/payments"), testID: "more-payments" },
+    { icon: Download, label: "Export this week (CSV)", onPress: exportCsv, testID: "more-export-csv" },
+    { icon: Users, label: "Staff & invites", onPress: () => router.push("/staff"), testID: "more-staff" },
+    { icon: Store, label: "Business profile", onPress: () => router.push("/profile"), testID: "more-profile" },
+    ...(isOwner ? [{ icon: Sparkles, label: "Subscription", onPress: () => router.push("/paywall"), testID: "more-subscription" } as const] : []),
+  ];
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
