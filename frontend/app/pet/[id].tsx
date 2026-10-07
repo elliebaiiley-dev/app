@@ -36,15 +36,21 @@ export default function PetDetail() {
     try {
       const res = await apiFetch<{ message: string; customer_phone: string }>(`/rebooking/message?pet_id=${id}`);
       if (Platform.OS === "web") {
-        if (typeof navigator !== "undefined" && (navigator as any).clipboard) {
-          await (navigator as any).clipboard.writeText(res.message);
+        try {
+          if (typeof navigator !== "undefined" && (navigator as any).clipboard) {
+            await (navigator as any).clipboard.writeText(res.message);
+          }
+        } catch {
+          // Clipboard write can fail in insecure contexts / headless — ignore.
         }
-        window.alert(`Rebooking message copied to clipboard:\n\n${res.message}`);
+        if (typeof window !== "undefined") {
+          window.alert(`Rebooking message copied to clipboard:\n\n${res.message}`);
+        }
       } else {
         await Share.share({ message: res.message });
       }
-    } catch (e: any) {
-      // ignore
+    } catch (e) {
+      console.error("rebooking message failed", e);
     } finally {
       setGenerating(false);
     }
@@ -122,7 +128,9 @@ export default function PetDetail() {
                 {pet.next_recommended_at ? `Next due ${formatDateFull(pet.next_recommended_at)}` : "No next appointment set"}
               </Text>
             </View>
-            <Button testID="pet-generate-msg" title="Message" variant="secondary" onPress={generateMessage} loading={generating} />
+            <View>
+              <Button testID="pet-generate-msg" title="Message" variant="secondary" onPress={generateMessage} loading={generating} />
+            </View>
           </View>
 
           {/* Info cards */}

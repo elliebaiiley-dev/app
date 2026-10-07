@@ -90,14 +90,20 @@ export default function BookingDetail() {
     try {
       const res = await apiFetch<{ message: string }>(`/rebooking/message?pet_id=${b.pet_id}`);
       if (Platform.OS === "web") {
-        if (typeof navigator !== "undefined" && (navigator as any).clipboard) {
-          await (navigator as any).clipboard.writeText(res.message);
+        try {
+          if (typeof navigator !== "undefined" && (navigator as any).clipboard) {
+            await (navigator as any).clipboard.writeText(res.message);
+          }
+        } catch {
+          // Clipboard write can fail in insecure contexts — ignore and still show the alert.
         }
         if (typeof window !== "undefined") window.alert(`Rebooking message copied:\n\n${res.message}`);
       } else {
         await Share.share({ message: res.message });
       }
-    } catch {}
+    } catch (e) {
+      console.error("rebooking message failed", e);
+    }
   };
 
   if (isLoading || !b) {
@@ -194,12 +200,15 @@ export default function BookingDetail() {
                   <View style={{ flex: 1 }}>
                     <Button
                       testID="pay-full"
-                      title={`Pay in full (${money(outstanding)})`}
+                      title="Pay in full"
                       variant="secondary"
+                      fullWidth
                       onPress={() => setPayAmount(outstanding.toFixed(2))}
                     />
                   </View>
-                  <Button testID="pay-add" title="Record payment" loading={savingPay} onPress={addPayment} />
+                  <View style={{ flex: 1 }}>
+                    <Button testID="pay-add" title="Record payment" fullWidth loading={savingPay} onPress={addPayment} />
+                  </View>
                 </View>
               </>
             ) : (
