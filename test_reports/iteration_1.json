@@ -1,0 +1,33 @@
+{
+  "summary": "PetAdmin end-to-end test. Backend: 20/20 pytest tests pass against public URL (auth JWT, onboarding, dashboard, customers/pets/bookings/services/payments CRUD, rebooking message, upload+file auth). Frontend web preview: Welcome→Login→Dashboard flow works with demo@petadmin.app; dashboard shows demo data (£180 revenue, 5 appointments, £140 outstanding, 3 unpaid, pets due); Calendar day/week toggle renders today's appts; Customers list → detail with pets + history timeline (bookings + payment events); Pet detail hero with gradient scrim, Age/Weight/Species cards, owner card, rebooking Message button opens a native Alert dialog; Services screen (add/delete) and Payments list render; Booking creation flow with customer→pet→service→date→time picker works; Register → Onboarding navigation works. All testIDs resolved. No red screens, no page errors. Only minor issue: DELETE /api/services soft-deletes but list_services doesn't filter deleted_at so deleted services keep appearing. Deprecated packages detected: none (expo-av/barcode-scanner/background-fetch not used).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "DELETE /api/services/{sid} + GET /api/services", "issue": "Soft-delete sets deleted_at but list_services (server.py:325-327) does NOT filter {\"deleted_at\": {\"$exists\": False}} like customers/pets do. Deleted services continue to appear in the Services screen and in booking service picker. Reproduced: a prior TEST_Service2 persisted after soft-delete."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "global (RN web)", "issues": ["Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\"'. Not blocking, but should be migrated to boxShadow in StyleSheet styles for future React Native Web compatibility."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Backend: In /api/services list endpoint (server.py list_services), filter out soft-deleted services by adding {\"deleted_at\": {\"$exists\": False}} to the query, matching customers/pets behaviour.",
+    "Frontend: Migrate shadow* style props (shadowColor/shadowOffset/shadowOpacity/shadowRadius) to the unified boxShadow string in theme/styles to silence the deprecation warning on web."
+  ],
+  "critical_code_review_comments": [
+    "server.py:325-327 list_services inconsistent with list_customers/list_pets (missing deleted_at filter).",
+    "server.py:721-744 /api/files auth path check works, but path normalisation (e.g. .. traversal) is not sanitised; low risk because object storage path format is enforced but worth adding os.path.normpath + validation.",
+    "server.py:453 'upcoming' comparison uses now_utc().isoformat() against stored start_at strings; works because strings are ISO-8601 timezone-less. OK but fragile if timezone-aware strings mix in."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Used existing demo@petadmin.app seeded demo data. Created a TEST_Customer / TEST_Service during pytest; TEST_Customer soft-deleted at end of test; TEST_Service soft-delete left a lingering row (see backend minor issue).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Primary auth: demo@petadmin.app / petadmin123. Backend pytest suite at /app/backend/tests/backend_test.py covers auth, dashboard, CRUD, rebooking, upload. Frontend testIDs: welcome-sign-in, welcome-create-account, login-email/password/submit, register-email/password/submit, dash-revenue-card, dash-outstanding-card, pet-card-{id}, customer-row-{id}, appt-row-{id}, dash-add-booking. Mongo collections are UUID 'id'-keyed; _id is stripped by clean(). Note: list_services does not filter soft-deleted rows, so TEST_Service entries may remain in the demo tenant until main agent fixes it."
+}

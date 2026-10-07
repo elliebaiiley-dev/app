@@ -1,0 +1,165 @@
+{
+  "app_name": "PetAdmin",
+  "personality": "1 iOS-Native Clean with 4 Tactile radius and spacing",
+  "personality_one_liner": "A professional yet friendly SaaS management tool for pet businesses, anchored in calm botanical tones, soft rounded cards, and generous whitespace.",
+  "color": {
+    "surface": "#FDFBF7",
+    "onSurface": "#1A1D1A",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#1A1D1A",
+    "surfaceTertiary": "#F2EFE9",
+    "onSurfaceTertiary": "#1A1D1A",
+    "surfaceInverse": "#262926",
+    "onSurfaceInverse": "#FDFBF7",
+    "brand": "#526A5A",
+    "onBrand": "#FFFFFF",
+    "brandPrimary": "#526A5A",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#E1E8E3",
+    "onBrandSecondary": "#2C3E32",
+    "brandTertiary": "#F0F4F1",
+    "onBrandTertiary": "#405547",
+    "success": "#426B4E",
+    "onSuccess": "#FFFFFF",
+    "warning": "#B8860B",
+    "onWarning": "#FFFFFF",
+    "error": "#A84642",
+    "onError": "#FFFFFF",
+    "info": "#6B8E76",
+    "onInfo": "#FFFFFF",
+    "border": "#E6E3DB",
+    "borderStrong": "#CCC8BD",
+    "muted": "#737974"
+  },
+  "typography": {
+    "displayFontFamily": "Plus Jakarta Sans",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous vertical breathing room and clear padding inside cards to ensure content doesn't feel cramped. Ensure safe-area padding at screen roots.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Apply to bottom tab bar when content scrolls behind it",
+      "Apply to Floating Action Buttons (FAB)",
+      "Sticky headers over scrolling content"
+    ],
+    "dont's": [
+      "Do not blur form fields",
+      "Do not blur individual list rows",
+      "Do not apply to body content"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Dashboard",
+      "purpose": "A quick operational overview for the busy professional, showing today's revenue and immediate upcoming appointments.",
+      "states": {
+        "loading": "Centered spinner using brandPrimary color.",
+        "empty": "Illustration of a calendar/dog with 'No appointments scheduled for today' and a primary CTA to 'Add Booking'.",
+        "error": "Readable message about failing to load data + Retry button."
+      },
+      "layout": "Header with 'Hello, [Name]' and date. Top section: Revenue summary cards arranged in a 2-column flex grid (width calculated with gap). Middle section: 'Today's Appointments' list with color-coded left borders or pills indicating status (Confirmed, Completed). Bottom: Pinned FAB or sticky bottom CTA for 'Quick Add Booking' floating over a glass container."
+    },
+    {
+      "name": "Pet Profiles",
+      "purpose": "The hero feature providing an in-depth view of a specific pet's health, history, and special requirements.",
+      "states": {
+        "loading": "Skeleton loader matching the profile structure.",
+        "empty": "Not applicable for a detail screen (would be 404/not found state).",
+        "error": "Readable message + Retry button."
+      },
+      "layout": "Top: Full-width hero image of the pet. **MANDATORY**: Apply a top-to-bottom linear-gradient scrim (transparent to ≥70% surfaceInverse) over the image. Overlay pet Name and Breed at the bottom 30% of this hero area in onSurfaceInverse. Below hero: A horizontal scroll or grid of stats (Age, Weight, Breed). Followed by pillowy rounded cards for 'Medical Notes', 'Allergies', and 'Vaccination Status' (using status colors subtly). Bottom section: Timeline of 'Customer History / Appointments'."
+    },
+    {
+      "name": "Calendar",
+      "purpose": "Manage daily and weekly schedules with clear visual blocks.",
+      "states": {
+        "loading": "Spinner.",
+        "empty": "Empty state graphic indicating a free schedule.",
+        "error": "Retry button."
+      },
+      "layout": "Top: Weekday selector (segmented control or horizontal date list). Below: Time-blocked list of appointments. Each appointment card shows pet name, service, time, and a status badge."
+    },
+    {
+      "name": "Onboarding",
+      "purpose": "Gather business information to set up the professional SaaS environment.",
+      "states": {
+        "loading": "Spinner during submission.",
+        "empty": "N/A",
+        "error": "Validation errors inline with inputs."
+      },
+      "layout": "Single column form. Labels above inputs. Progress indicator at the top. Pinned primary 'Continue' CTA at the bottom inside KeyboardAvoidingView."
+    },
+    {
+      "name": "Subscription",
+      "purpose": "Gate premium features behind a paywall after the 14-day free trial.",
+      "states": {
+        "loading": "Spinner.",
+        "empty": "N/A",
+        "error": "Error alert."
+      },
+      "layout": "Centered pricing tier card ('£12.99/month') using brandTertiary tint. Feature list below with checkmarks. Sticky bottom CTA 'Start 14-Day Free Trial'."
+    }
+  ],
+  "images": {
+    "hero_pet_profile": {
+      "url": "https://images.unsplash.com/photo-1633722715463-d30f4f325e24?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjd8MHwxfHNlYXJjaHwxfHxnb2xkZW4lMjByZXRyaWV2ZXIlMjBzbWlsaW5nfGVufDB8fHx8MTc5MTM2NTAxMXww&ixlib=rb-4.1.0&q=85",
+      "alt": "A smiling golden retriever sitting in the grass"
+    },
+    "secondary_pet": {
+      "url": "https://images.unsplash.com/photo-1531842477197-54acf89bff98?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA4Mzl8MHwxfHNlYXJjaHwxfHxmcmVuY2glMjBidWxsZG9nJTIwcHVwcHl8ZW58MHx8fHwxNzkxMzY1MDE2fDA&ixlib=rb-4.1.0&q=85",
+      "alt": "An adult Boston terrier/French bulldog looking up"
+    },
+    "grooming_action": {
+      "url": "https://images.unsplash.com/photo-1561037404-61cd46aa615b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTJ8MHwxfHNlYXJjaHwxfHxkb2clMjBncm9vbWluZ3xlbnwwfHx8fDE3OTEzNjUwMjR8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Black and white short coated dog"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Follow the defined palette strictly: Use surface (#FDFBF7) for background, and brand (#526A5A, Sage green) for primary actions. DO NOT use indigo, blue, or purple anywhere in the UI.",
+    "Implement rounded pillowy cards using the lg (20) radius token to achieve the modern, friendly SaaS look requested.",
+    "For the Pet Profiles hero section, YOU MUST implement a vertical linear-gradient scrim (transparent to ≥70% surfaceInverse) layered directly above the expo-image and below the text content to ensure WCAG AA readability for the pet's name/breed.",
+    "Ensure safe-area spacing at the root of every screen, and ensure all Pressable touch targets are ≥44x44pt.",
+    "For scrolling screens with a primary action (e.g., Quick Add Booking, Start Trial), use the sticky primary CTA pattern anchored at the bottom (outside the ScrollView) to ensure quick reachability.",
+    "For data lists, ensure minimum 56pt height and include Loading, Empty, and Error states filling the flex area.",
+    "Use Phosphor icons consistently; do not mix icon sets or weights.",
+    "Learning from research: Multi-pet tracking should use circular avatars. Dashboard UI should include clear revenue summary blocks and color-coded weekly day selectors for scheduling."
+  ]
+}
