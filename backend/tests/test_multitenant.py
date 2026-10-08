@@ -30,7 +30,7 @@ def _unique(prefix):
 def _register(email_prefix: str):
     s = _s()
     email = f"{email_prefix}_{uuid.uuid4().hex[:6]}@test.pet".lower()
-    r = s.post(f"{API}/auth/register", json={"email": email, "password": "pw1234", "name": email_prefix})
+    r = s.post(f"{API}/auth/register", json={"email": email, "password": "pw123456", "name": email_prefix})
     assert r.status_code == 200, r.text
     data = r.json()
     s.headers["Authorization"] = f"Bearer {data['access_token']}"
@@ -230,7 +230,7 @@ class TestStaffInvites:
 
         # Accept
         ra = requests.post(f"{API}/invites/accept", json={
-            "token": inv["token"], "password": "pw1234", "name": "StaffUser"
+            "token": inv["token"], "password": "pw123456", "name": "StaffUser"
         })
         assert ra.status_code == 200
         data = ra.json()
@@ -250,7 +250,7 @@ class TestStaffInvites:
 
         # Idempotency: accepting the same token again returns 404 (invite already used)
         ra2 = requests.post(f"{API}/invites/accept", json={
-            "token": inv["token"], "password": "pw1234", "name": "StaffUser"
+            "token": inv["token"], "password": "pw123456", "name": "StaffUser"
         })
         assert ra2.status_code == 404
 
@@ -276,7 +276,7 @@ class TestRoleGating:
         r = owner_a["sess"].post(f"{API}/staff/invite", json={"email": email, "role": "staff"})
         assert r.status_code == 200
         tok = r.json()["token"]
-        ra = requests.post(f"{API}/invites/accept", json={"token": tok, "password": "pw1234", "name": "gating"})
+        ra = requests.post(f"{API}/invites/accept", json={"token": tok, "password": "pw123456", "name": "gating"})
         assert ra.status_code == 200
         ss = _s()
         ss.headers["Authorization"] = f"Bearer {ra.json()['access_token']}"
@@ -305,7 +305,7 @@ class TestUnlimitedStaff:
             r = owner_a["sess"].post(f"{API}/staff/invite", json={"email": email, "role": "staff"})
             assert r.status_code == 200
             tok = r.json()["token"]
-            ra = requests.post(f"{API}/invites/accept", json={"token": tok, "password": "pw1234", "name": f"bulk{i}"})
+            ra = requests.post(f"{API}/invites/accept", json={"token": tok, "password": "pw123456", "name": f"bulk{i}"})
             assert ra.status_code == 200
             emails.append(email)
         bs = owner_a["sess"].get(f"{API}/billing/status").json()
@@ -322,7 +322,7 @@ class TestDeactivation:
         email = f"deact_{uuid.uuid4().hex[:6]}@test.pet"
         r = owner_a["sess"].post(f"{API}/staff/invite", json={"email": email, "role": "staff"})
         tok = r.json()["token"]
-        ra = requests.post(f"{API}/invites/accept", json={"token": tok, "password": "pw1234", "name": "dz"})
+        ra = requests.post(f"{API}/invites/accept", json={"token": tok, "password": "pw123456", "name": "dz"})
         access = ra.json()["access_token"]
         members = owner_a["sess"].get(f"{API}/staff").json()["members"]
         mid = next(m["membership_id"] for m in members if m["email"] == email.lower())
@@ -337,7 +337,7 @@ class TestDeactivation:
         assert s.get(f"{API}/customers").status_code == 403
 
         # Login attempt also 403 (all memberships deactivated)
-        rl = requests.post(f"{API}/auth/login", json={"email": email, "password": "pw1234"})
+        rl = requests.post(f"{API}/auth/login", json={"email": email, "password": "pw123456"})
         assert rl.status_code == 403
 
         # Reactivate
@@ -378,7 +378,7 @@ class TestSharedEntitlement:
             email = f"share_{uuid.uuid4().hex[:6]}@test.pet"
             r = owner_a["sess"].post(f"{API}/staff/invite", json={"email": email, "role": "staff"})
             tok = r.json()["token"]
-            ra = requests.post(f"{API}/invites/accept", json={"token": tok, "password": "pw1234", "name": "share"})
+            ra = requests.post(f"{API}/invites/accept", json={"token": tok, "password": "pw123456", "name": "share"})
             ss = _s()
             ss.headers["Authorization"] = f"Bearer {ra.json()['access_token']}"
             o = owner_a["sess"].get(f"{API}/billing/status").json()

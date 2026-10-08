@@ -29,8 +29,18 @@ No payroll, accounting, inventory, enterprise multi-user, real subscription bill
 - Hero pet profile uses `expo-linear-gradient` scrim over `expo-image`.
 
 ## Architecture
-- **Backend** FastAPI + Motor + MongoDB. Routes under `/api`. JWT (HS256, 30 days). Collections: users, business_profiles, customers, pets, services, bookings, payments. UUIDs as `id`, `_id` excluded from responses. Pet photos uploaded via `/api/upload` to Emergent Object Storage, served via `/api/files/{path}` with `?token=` query auth for web.
+- **Backend** FastAPI + Motor + MongoDB. Routes under `/api`. JWT (HS256, 30 days, secret enforced ≥32 chars at boot). Collections: users, businesses, memberships, invites, customers, pets, services, bookings, payments, stripe_events, checkout_sessions. UUIDs as `id`, `_id` excluded from responses. Pet photos uploaded via `/api/upload` to Emergent Object Storage, served via `/api/files/{path}` with `?token=` query auth for web.
 - **Frontend** Expo Router (`app/` directory), react-query for data, keyboard-controller for forms, safe-area insets everywhere.
+
+## Security posture (post-audit, Oct 2026)
+- Stripe webhook requires a signed event; `/api/stripe/webhook` returns `503` when `STRIPE_WEBHOOK_SECRET` is unset — forged events cannot flip subscription state.
+- JWT_SECRET is required at startup (no default fallback); `.env` is git-ignored across root, backend, and frontend.
+- CSV export neutralises `=`, `+`, `-`, `@`, `\t`, `\r` leading characters to prevent spreadsheet formula injection.
+- CORS uses an allowlist from `CORS_ALLOWED_ORIGINS`; wildcard only in dev.
+- Security headers on every response: `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and `Strict-Transport-Security` on HTTPS requests.
+- In-memory rate limiting on `/auth/register`, `/auth/login`, `/invites/accept` (30/min per IP).
+- Neutral error messages on duplicate registration and Stripe failures to prevent enumeration / internal leak.
+- Password minimum length raised to 8 chars.
 
 ## Business model
 14-day trial → £12.99/month subscription (UI only). Feature list on paywall screen.

@@ -27,9 +27,21 @@ load_dotenv(ROOT_DIR / ".env")
 # ---------- Config ----------
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-JWT_SECRET = os.environ.get("JWT_SECRET", "petadmin-dev-secret-change-me")
+# JWT_SECRET MUST be provided via env. We refuse to boot with a default/empty value
+# to avoid forged-token risks if an operator forgets to set it in production.
+JWT_SECRET = os.environ.get("JWT_SECRET", "").strip()
+if not JWT_SECRET or len(JWT_SECRET) < 32:
+    raise RuntimeError(
+        "JWT_SECRET env var is missing or too short (<32 chars). "
+        "Generate one with: python3 -c \"import secrets; print(secrets.token_urlsafe(48))\" "
+        "and set it in your hosting dashboard."
+    )
 JWT_ALG = "HS256"
 JWT_EXPIRE_DAYS = 30
+# CORS: a comma-separated allowlist. "*" is allowed in dev only; in production
+# set CORS_ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com.
+_cors_env = (os.environ.get("CORS_ALLOWED_ORIGINS") or "*").strip()
+CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_env.split(",") if o.strip()] or ["*"]
 
 EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
 STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
@@ -55,6 +67,38 @@ bearer = HTTPBearer(auto_error=False)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 log = logging.getLogger("petadmin")
+
+
+# ---------- Simple in-memory rate limiter ----------
+# Not a replacement for a reverse-proxy limiter in production, but prevents
+# trivial automated brute force / enumeration from a single IP within one
+# process. Keyed by (bucket, client_ip). Window is a rolling 60s.
+_RATE_WINDOW_SECONDS = 60
+_RATE_BUCKETS: Dict[str, List[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _rate_limit(request: Request, bucket: str, limit: int) -> None:
+    import time as _t
+    now = _t.time()
+    key = f"{bucket}:{_client_ip(request)}"
+    hits = _RATE_BUCKETS.get(key, [])
+    cutoff = now - _RATE_WINDOW_SECONDS
+    hits = [t for t in hits if t > cutoff]
+    if len(hits) >= limit:
+        raise HTTPException(429, "Too many requests. Please wait a moment and try again.")
+    hits.append(now)
+    _RATE_BUCKETS[key] = hits
+    # Opportunistic cleanup to keep the dict small.
+    if len(_RATE_BUCKETS) > 2000:
+        for k in list(_RATE_BUCKETS.keys())[:500]:
+            _RATE_BUCKETS.pop(k, None)
 
 
 # ---------- Helpers ----------
@@ -200,7 +244,7 @@ def _get_object_sync(path: str):
 # ---------- Models ----------
 class RegisterIn(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
     name: Optional[str] = ""
 
 
@@ -290,7 +334,7 @@ class InviteIn(BaseModel):
 
 class AcceptInviteIn(BaseModel):
     token: str
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
     name: Optional[str] = ""
 
 
@@ -315,11 +359,13 @@ async def _user_summary(user: Dict[str, Any]) -> UserOut:
 
 # ---------- Auth routes ----------
 @api.post("/auth/register", response_model=TokenOut)
-async def register(body: RegisterIn):
+async def register(body: RegisterIn, request: Request):
+    _rate_limit(request, "register", limit=30)
     email = body.email.lower().strip()
     existing = await db.users.find_one({"email": email})
     if existing:
-        raise HTTPException(status_code=409, detail="Email already registered")
+        # Neutral error (same shape as login) to avoid user enumeration.
+        raise HTTPException(status_code=400, detail="Could not create account. Please check your details and try again.")
     now = now_utc()
     user_doc = {
         "id": new_id(),
@@ -335,7 +381,8 @@ async def register(body: RegisterIn):
 
 
 @api.post("/auth/login", response_model=TokenOut)
-async def login(body: LoginIn):
+async def login(body: LoginIn, request: Request):
+    _rate_limit(request, "login", limit=30)
     email = body.email.lower().strip()
     user = await db.users.find_one({"email": email})
     if not user or not verify_password(body.password, user["password_hash"]):
@@ -1005,7 +1052,8 @@ async def get_invite(token: str):
 
 
 @api.post("/invites/accept", response_model=TokenOut)
-async def accept_invite(body: AcceptInviteIn):
+async def accept_invite(body: AcceptInviteIn, request: Request):
+    _rate_limit(request, "invite_accept", limit=30)
     inv = await db.invites.find_one({"token": body.token, "status": "pending"})
     if not inv:
         raise HTTPException(404, "Invite not found or already used")
@@ -1171,7 +1219,7 @@ async def create_checkout(body: CheckoutIn, owner: Member = Depends(require_owne
         session = await run_in_threadpool(stripe.checkout.Session.create, **kwargs)
     except stripe.error.StripeError as e:
         log.error("Stripe checkout error: %s", e)
-        raise HTTPException(502, f"Stripe error: {getattr(e, 'user_message', None) or str(e)}")
+        raise HTTPException(502, "Payment provider unavailable. Please try again in a moment.")
     await db.checkout_sessions.update_one(
         {"session_id": session["id"]},
         {"$set": {
@@ -1227,7 +1275,8 @@ async def verify_checkout(session_id: str, owner: Member = Depends(require_owner
             stripe.checkout.Session.retrieve, session_id, expand=["subscription"],
         )
     except stripe.error.StripeError as e:
-        raise HTTPException(502, f"Stripe error: {str(e)}")
+        log.error("Stripe verify error: %s", e)
+        raise HTTPException(502, "Could not verify payment with provider. Please refresh.")
     meta_biz = (session.get("metadata") or {}).get("business_id")
     if meta_biz and meta_biz != owner.business_id:
         raise HTTPException(403, "Session does not belong to this business")
@@ -1250,20 +1299,22 @@ async def verify_checkout(session_id: str, owner: Member = Depends(require_owner
 
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request):
+    # Reject outright if the deployment has no webhook secret configured.
+    # Without a secret we cannot authenticate incoming events, so processing
+    # them would let anyone on the internet flip subscription state.
+    if not STRIPE_WEBHOOK_SECRET:
+        log.warning("Rejected /api/stripe/webhook — STRIPE_WEBHOOK_SECRET not configured")
+        raise HTTPException(503, "Webhook endpoint not configured")
     payload = await request.body()
     signature = request.headers.get("stripe-signature", "")
-    event: Optional[Dict[str, Any]] = None
-    if STRIPE_WEBHOOK_SECRET:
-        try:
-            event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
-        except Exception:
-            raise HTTPException(400, "Invalid webhook signature")
-    else:
-        import json as _json
-        try:
-            event = _json.loads(payload.decode("utf-8"))
-        except Exception:
-            raise HTTPException(400, "Invalid payload")
+    if not signature:
+        raise HTTPException(400, "Missing stripe-signature header")
+    try:
+        event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(400, "Invalid webhook signature")
+    except Exception:
+        raise HTTPException(400, "Invalid payload")
 
     event_id = event.get("id")
     if event_id:
@@ -1282,7 +1333,21 @@ async def stripe_webhook(request: Request):
             if customer_id:
                 biz = await db.businesses.find_one({"stripe_customer_id": customer_id})
                 business_id = (biz or {}).get("id")
+        # Only mutate state if we can tie this event to a known business.
         if business_id:
+            # Extra belt-and-braces: ensure the resolved business actually
+            # owns the stripe customer referenced in the event (prevents a
+            # spoofed metadata.business_id from pointing at an unrelated biz).
+            customer_id = obj.get("customer")
+            if customer_id:
+                biz = await db.businesses.find_one({"id": business_id})
+                existing_cust = (biz or {}).get("stripe_customer_id")
+                if existing_cust and existing_cust != customer_id:
+                    log.warning(
+                        "Rejected webhook: business %s customer mismatch (expected %s, got %s)",
+                        business_id, existing_cust, customer_id,
+                    )
+                    return {"received": True, "ignored": True}
             await _activate_business_from_subscription(business_id, obj)
     return {"received": True}
 
@@ -1380,8 +1445,18 @@ async def seed_demo(member: Member = Depends(current_member)):
 
 
 # ---------- CSV export ----------
+# Characters that spreadsheet apps (Excel, Numbers, LibreOffice) treat as
+# formula triggers when they appear at the start of a cell. Prefixing with
+# a single quote neutralises the formula on open while remaining readable.
+_CSV_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
 def _csv_escape(v: Any) -> str:
     s = "" if v is None else str(v)
+    # 1) Neutralise CSV formula injection — any leading trigger char becomes text.
+    if s and s[0] in _CSV_FORMULA_TRIGGERS:
+        s = "'" + s
+    # 2) Standard CSV quoting for separators, quotes and newlines.
     if any(c in s for c in [",", "\"", "\n", "\r"]):
         s = "\"" + s.replace("\"", "\"\"") + "\""
     return s
@@ -1522,10 +1597,30 @@ app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------- Security headers ----------
+# Lightweight headers middleware. HSTS is only emitted when the request is
+# served over HTTPS (behind the reverse proxy). CSP is intentionally
+# permissive for inline React Native Web but blocks framing + object sources.
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    # Only emit HSTS on secure requests to avoid breaking local dev over http.
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if request.url.scheme == "https" or forwarded_proto == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 async def _migrate_v2_single_tenant_to_business() -> None:

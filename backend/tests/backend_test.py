@@ -75,7 +75,9 @@ def test_register_and_login_new_user(session):
 
 def test_register_duplicate_rejected(session):
     r = session.post(f"{API}/auth/register", json={"email": DEMO_EMAIL, "password": "whatever"})
-    assert r.status_code == 409
+    # Neutral error to prevent user enumeration (SEC audit hardening).
+    assert r.status_code == 400
+    assert "already registered" not in r.text.lower()
 
 
 def test_demo_login_works(demo_token):

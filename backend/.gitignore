@@ -1,0 +1,11 @@
+# Never commit real secrets. Only .env.example is checked in.
+.env
+.env.local
+.env.*.local
+!.env.example
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/

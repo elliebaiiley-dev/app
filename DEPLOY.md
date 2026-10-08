@@ -27,6 +27,8 @@ Create accounts (all free to start):
 Push the Emergent code to GitHub:
 - In Emergent, open the right-hand sidebar → **Save to GitHub** → authorise GitHub → pick a repo name like `petadmin`. From now on, every change you make in Emergent can be committed to GitHub with a click.
 
+> **Security note:** `.env` files (both backend and frontend) are git-ignored, so your real secrets never leave the hosting dashboards. Only `.env.example` templates ship in the repo.
+
 ---
 
 ## 1. Database — MongoDB Atlas (5 min)
@@ -56,9 +58,10 @@ Push the Emergent code to GitHub:
    | --- | --- |
    | `MONGO_URL` | the Atlas connection string from step 1.5 |
    | `DB_NAME` | `petadmin` |
-   | `JWT_SECRET` | long random string (run `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` locally) |
+   | `JWT_SECRET` | long random string, min 32 chars (run `python3 -c "import secrets; print(secrets.token_urlsafe(48))"` locally). **The API will refuse to boot without this.** |
+   | `CORS_ALLOWED_ORIGINS` | your Vercel URL(s), comma-separated, no trailing slash. E.g. `https://petadmin.co.uk,https://www.petadmin.co.uk`. Use `*` only during initial Railway smoke-testing, then tighten. |
    | `STRIPE_API_KEY` | your `sk_test_...` or `sk_live_...` from Stripe dashboard |
-   | `STRIPE_WEBHOOK_SECRET` | leave empty for now, we'll fill it in step 5 |
+   | `STRIPE_WEBHOOK_SECRET` | fill in at step 5 (until then the webhook endpoint will return `503` — this is the safe default and protects your subscriptions from forged events) |
    | `STRIPE_PRICE_AMOUNT_GBP` | `1299` |
    | `STRIPE_TRIAL_DAYS` | `14` |
    | `EMERGENT_LLM_KEY` | *(optional — only if you keep using Emergent object storage for pet photos; see "Pet photos" note below)* |
@@ -196,5 +199,6 @@ Nothing to change — just deploy and go.
 
 - Vercel build failing: `vercel.json` and `yarn.lock` must both be committed; check the Vercel build log — missing env vars show up as console warnings but shouldn't fail the build.
 - Railway "502 Bad Gateway": the Python app crashed. Open logs — usually a bad `MONGO_URL` or missing `JWT_SECRET`.
-- CORS errors in the browser console: your `EXPO_PUBLIC_BACKEND_URL` is wrong, or your Railway domain changed. The backend already allows all origins (`CORSMiddleware allow_origins=["*"]`), so this is almost always a wrong URL.
+- CORS errors in the browser console: your `EXPO_PUBLIC_BACKEND_URL` is wrong, or your Vercel domain isn't in `CORS_ALLOWED_ORIGINS` on Railway. Add the exact origin (scheme + host, no trailing slash) and redeploy.
+- Stripe webhook returns 503: `STRIPE_WEBHOOK_SECRET` is empty on Railway — set it (step 5) and redeploy. This 503 is a deliberate safety: without a signing secret the endpoint cannot verify events, so it refuses them.
 - Stripe checkout gives "Invalid API key": you still have `sk_test_emergent` in Railway — swap it for your real key (step 8).
